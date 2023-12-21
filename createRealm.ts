@@ -1,10 +1,21 @@
 import {
     GovernanceConfig,
     MintMaxVoteWeightSource,
-    VoteThreshold, VoteThresholdType, VoteTipping, VoteType, withCreateGovernance, withCreateProposal,
+    VoteThreshold,
+    VoteThresholdType,
+    VoteTipping,
+    VoteType,
+    withCreateGovernance,
+    withCreateProposal,
     withCreateRealm,
     withDepositGoverningTokens,
-    createInstructionData, withSignOffProposal, withInsertTransaction
+    createInstructionData,
+    withSignOffProposal,
+    withInsertTransaction,
+    Vote,
+    YesNoVote,
+    withCastVote,
+    withExecuteTransaction, getProposalTransactionAddress, withFlagTransactionError
 } from "@solana/spl-governance";
 
 import {Connection, Keypair, PublicKey, TransactionInstruction} from "@solana/web3.js";
@@ -170,7 +181,7 @@ const test1 = async () => {
         wallet.publicKey,
         0,
         0,
-        0,
+        1,
         [instructionData],
         wallet.publicKey
     );
@@ -186,6 +197,62 @@ const test1 = async () => {
         tokenOwnerRecordPk,
     );
 
+    await sendTransaction(connection, instructions, signers, wallet);
+
+    // Cast Vote
+    instructions = [];
+    signers = [];
+
+    const vote = Vote.fromYesNoVote(YesNoVote.Yes);
+
+    const votePk = await withCastVote(
+        instructions,
+        governanceProgramId,
+        programVersion,
+        realmPk,
+        governancePk,
+        proposalPk,
+        tokenOwnerRecordPk, // Proposal owner TokenOwnerRecord
+        tokenOwnerRecordPk, // Voter TokenOwnerRecord
+        wallet.publicKey, // Voter wallet or delegate
+        mintPk,
+        vote,
+        wallet.publicKey,
+    );
+
+    await sendTransaction(connection, instructions, signers, wallet);
+
+    instructions = [];
+    signers = [];
+    const proposalTransactionAddress = await getProposalTransactionAddress(
+        governanceProgramId,
+        programVersion,
+        proposalPk,
+        0,
+        0,
+    );
+    console.log("native treasury is", nativeTreasury.toBase58());
+    console.log("proposalTransactionAddress is", proposalTransactionAddress.toBase58());
+
+    withFlagTransactionError(
+        instructions,
+        governanceProgramId,
+        programVersion,
+        proposalPk,
+        tokenOwnerRecordPk,
+        wallet.publicKey,
+        proposalTransactionAddress,
+    );
+    await withExecuteTransaction(
+        instructions,
+        governanceProgramId,
+        programVersion,
+        governancePk,
+        proposalPk,
+        proposalTransactionAddress,
+        [instructionData]
+    )
+    await new Promise(f => setTimeout(f, 10000));
     await sendTransaction(connection, instructions, signers, wallet);
 
     console.log("realm is", realmPk.toBase58());
