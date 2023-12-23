@@ -172,6 +172,7 @@ const test1 = async () => {
     const tokenHolding = PublicKey.findProgramAddressSync([Buffer.from("governance"), realmPk.toBuffer(), mintPk.toBuffer()], governanceProgramId)[0];
     console.log("token holding is", tokenHolding.toBase58());
     await sendTransaction(connection, instructions, signers, wallet)
+    return;
     instructions = [];
     signers = [];
 
