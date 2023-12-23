@@ -159,14 +159,22 @@ const test1 = async () => {
         useDenyOption,
         wallet.publicKey,
     );
-
+    const [nativeTreasury, _] = PublicKey.findProgramAddressSync([Buffer.from("native-treasury"), governancePk.toBuffer()], governanceProgramId);
+    console.log("realm is", realmPk.toBase58());
+    console.log('governance is', governancePk.toBase58());
+    console.log("proposal is", proposalPk.toBase58());
     console.log("mint is", mintPk.toBase58());
+    console.log("ata is", ataPk.toBase58());
     console.log("signers are",signers);
+    console.log("native treasury is", nativeTreasury.toBase58());
+    console.log("tokenOwnerRecordPk is", tokenOwnerRecordPk.toBase58());
+    //holding
+    const tokenHolding = PublicKey.findProgramAddressSync([Buffer.from("governance"), realmPk.toBuffer(), mintPk.toBuffer()], governanceProgramId)[0];
+    console.log("token holding is", tokenHolding.toBase58());
     await sendTransaction(connection, instructions, signers, wallet)
     instructions = [];
     signers = [];
 
-    const [nativeTreasury, _] = PublicKey.findProgramAddressSync([Buffer.from("native-treasury"), governancePk.toBuffer()], governanceProgramId);
     const memoInstruction = createMemoInstruction("What's up?",
        [nativeTreasury]
         );
@@ -255,9 +263,6 @@ const test1 = async () => {
     await new Promise(f => setTimeout(f, 10000));
     await sendTransaction(connection, instructions, signers, wallet);
 
-    console.log("realm is", realmPk.toBase58());
-    console.log('governance is', governancePk.toBase58());
-    console.log("proposal is", proposalPk.toBase58());
     console.log("done");
 }
 
