@@ -37,6 +37,8 @@ import { createMemoInstruction } from "@solana/spl-memo";
 import BN from "bn.js";
 import { AnchorProvider } from '@coral-xyz/anchor';
 import NodeWallet from '@coral-xyz/anchor/dist/cjs/nodewallet';
+import { getAssociatedTokenAddressSync, TOKEN_PROGRAM_ID } from '@solana/spl-token';
+import { ASSOCIATED_PROGRAM_ID } from '@coral-xyz/anchor/dist/cjs/utils/token';
 
 const connection = new Connection("http://127.0.0.1:8899");
 const governanceProgramId = new PublicKey("GovER5Lthms3bLBqWub97yVrMmEogzX7xNjdXpPPCVZw");
@@ -68,7 +70,7 @@ const test1 = async () => {
         wallet.publicKey,
         wallet.publicKey,
     );
-    await withMintTo(instructions, mintPk, ataPk, wallet.publicKey, 1);
+    await withMintTo(instructions, mintPk, ataPk, wallet.publicKey,10);
 
     // Create Realm
     const name = `Realm-${new Keypair().publicKey.toBase58().slice(0, 6)}`;
@@ -85,8 +87,10 @@ const test1 = async () => {
         undefined,
         MintMaxVoteWeightSource.FULL_SUPPLY_FRACTION,
         new BN(1),
+        new GoverningTokenConfigAccountArgs({voterWeightAddin: undefined, maxVoterWeightAddin: undefined, tokenType: GoverningTokenType.Liquid})
     );
 
+    //let dummyIxs: TransactionInstruction[] = []
     // Deposit governance tokens
     const tokenOwnerRecordPk = await withDepositGoverningTokens(
         instructions,
@@ -184,9 +188,116 @@ const test1 = async () => {
     instructions = [];
     signers = [];
 
+
+    const nodeWallet = new NodeWallet(wallet);
+    const provider = new AnchorProvider(connection, nodeWallet, AnchorProvider.defaultOptions());
+    const vsr = await VsrClient.connect(provider, false);
+    console.log("program id", vsr.program.programId);
+
+
+    const [registrar, registrarBump] = PublicKey.findProgramAddressSync([realmPk.toBuffer(), Buffer.from("registrar"), mintPk.toBuffer()], vsr.program.programId);
+    const registrarSig = await vsr.program.methods.createRegistrar(registrarBump).accounts({
+        registrar,
+        realm: realmPk,
+        governanceProgramId,
+        realmGoverningTokenMint: mintPk,
+        realmAuthority: realmAuthorityPk.publicKey,
+        payer: provider.publicKey
+    }).rpc();
+    console.log("created registrar", registrarSig);
+    const addVotingMintSig = await vsr.program.methods.configureVotingMint(
+        0,
+        0,
+        new BN(100000000),
+        new BN(900000000),
+        new BN(157680000),
+        null
+    ).accounts(
+        {
+            registrar,
+            realmAuthority: realmAuthorityPk.publicKey,
+            mint: mintPk,
+        }
+    ).remainingAccounts([
+        {
+            pubkey: mintPk,
+            isSigner: false,
+            isWritable: false
+        }
+    ]).rpc();
+    console.log("added voting mint", addVotingMintSig);
+
+    // let realmConfigIxs: TransactionInstruction[] = [];
+    // await withSetRealmConfig(
+    //     realmConfigIxs,
+    //     governanceProgramId,
+    //     3,
+    //     realmPk,
+    //     realmAuthorityPk.publicKey,
+    //     undefined,
+    //     new MintMaxVoteWeightSource({type: MintMaxVoteWeightSourceType.Absolute, value: new BN(1000000000)}),
+    //     new BN(1),
+    //     new GoverningTokenConfigAccountArgs({voterWeightAddin: vsr.program.programId, maxVoterWeightAddin: undefined, tokenType: GoverningTokenType.Liquid }),
+    //     undefined,
+    //     undefined
+    // );
+    // await sendTransaction(connection, realmConfigIxs, [realmAuthorityPk], realmAuthorityPk);
+    // console.log("setup realm config");
+    // // Create voter
+
+    const [voter, voterBump] = PublicKey.findProgramAddressSync([registrar.toBuffer(), Buffer.from("voter"), wallet.publicKey.toBuffer()], vsr.program.programId);
+    const [voterWeightRecord, voterWeightRecordBump] = PublicKey.findProgramAddressSync([registrar.toBuffer(), Buffer.from("voter-weight-record"), wallet.publicKey.toBuffer()], vsr.program.programId);
+    const createVoterSig = await vsr.program.methods.createVoter(
+        voterBump,
+        voterWeightRecordBump
+    ).accounts({
+        registrar,
+        voter,
+        voterAuthority: wallet.publicKey,
+        voterWeightRecord,
+        payer: wallet.publicKey,
+        rent: new PublicKey("SysvarRent111111111111111111111111111111111"),
+        instructions: new PublicKey("Sysvar1nstructions1111111111111111111111111")
+    }).rpc();
+    console.log("create voter sig", createVoterSig);
+
+    const vaultAta = getAssociatedTokenAddressSync(mintPk, voter, true);
+
+    const createDepositEntrySig = await vsr.program.methods.createDepositEntry(
+        0,
+        {none: {}},
+        null,
+        0,
+        false
+    ).accounts({
+        registrar,
+        voter,
+        vault: vaultAta,
+        voterAuthority: wallet.publicKey,
+        payer: wallet.publicKey,
+        depositMint: mintPk,
+        tokenProgram: TOKEN_PROGRAM_ID,
+        associatedTokenProgram: ASSOCIATED_PROGRAM_ID,
+        rent: new PublicKey("SysvarRent111111111111111111111111111111111")
+    }).rpc()
+    console.log("create deposit entry sig", createDepositEntrySig);
+
+    const depositSig = await vsr.program.methods.deposit(
+        0,
+        new BN(1)).accounts({
+        registrar,
+        voter,
+        vault: vaultAta,
+        depositToken: ataPk,
+        depositAuthority: wallet.publicKey,
+        tokenProgram: TOKEN_PROGRAM_ID,
+    }).rpc()
+    console.log("deposit sig", depositSig);
+
+    // Vote after setup
     const memoInstruction = createMemoInstruction("What's up?",
-       [nativeTreasury]
-        );
+        [nativeTreasury]
+    );
     const instructionData = createInstructionData(memoInstruction);
     await withInsertTransaction(
         instructions,
@@ -222,6 +333,13 @@ const test1 = async () => {
     signers = [];
 
     const vote = Vote.fromYesNoVote(YesNoVote.Yes);
+
+    const updateVoterWeightRecord = await vsr.program.methods.updateVoterWeightRecord().accounts({
+        registrar,
+        voter,
+        voterWeightRecord,
+    }).instruction();
+    instructions.push(updateVoterWeightRecord);
 
     const votePk = await withCastVote(
         instructions,
@@ -273,62 +391,6 @@ const test1 = async () => {
     )
     await new Promise(f => setTimeout(f, 10000));
     await sendTransaction(connection, instructions, signers, wallet);
-
-    const nodeWallet = new NodeWallet(wallet);
-    const provider = new AnchorProvider(connection, nodeWallet, AnchorProvider.defaultOptions());
-    const vsr = await VsrClient.connect(provider, false);
-    console.log("program id", vsr.program.programId);
-
-
-    const [registrar, registrarBump] = PublicKey.findProgramAddressSync([realmPk.toBuffer(), Buffer.from("registrar"), mintPk.toBuffer()], vsr.program.programId);
-    const registrarSig = await vsr.program.methods.createRegistrar(registrarBump).accounts({
-        registrar,
-        realm: realmPk,
-        governanceProgramId,
-        realmGoverningTokenMint: mintPk,
-        realmAuthority: realmAuthorityPk.publicKey,
-        payer: provider.publicKey
-    }).rpc();
-    console.log("created registrar", registrarSig);
-    const addVotingMintSig = await vsr.program.methods.configureVotingMint(
-        0,
-        0,
-        new BN(100000000),
-        new BN(900000000),
-        new BN(157680000),
-        null
-    ).accounts(
-        {
-            registrar,
-            realmAuthority: realmAuthorityPk.publicKey,
-            mint: mintPk,
-        }
-    ).remainingAccounts([
-        {
-            pubkey: mintPk,
-            isSigner: false,
-            isWritable: false
-        }
-    ]).rpc();
-    console.log("added voting mint", addVotingMintSig);
-
-    let realmConfigIxs: TransactionInstruction[] = [];
-    await withSetRealmConfig(
-        realmConfigIxs,
-        governanceProgramId,
-        3,
-        realmPk,
-        realmAuthorityPk.publicKey,
-        undefined,
-        new MintMaxVoteWeightSource({type: MintMaxVoteWeightSourceType.Absolute, value: new BN(1000000000)}),
-        new BN(1),
-        new GoverningTokenConfigAccountArgs({voterWeightAddin: vsr.program.programId, maxVoterWeightAddin: undefined, tokenType: GoverningTokenType.Liquid }),
-        undefined,
-        undefined
-    );
-    await sendTransaction(connection, realmConfigIxs, [realmAuthorityPk], realmAuthorityPk);
-    console.log("setup realm config");
-
 
 
 }
