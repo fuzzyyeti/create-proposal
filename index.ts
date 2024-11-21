@@ -2,9 +2,41 @@ import {
     getRealm,
     getAllGovernances,
     getGovernanceAccount,
-    Governance
+    Governance, withDepositGoverningTokens
 } from "@solana/spl-governance";
-import {Connection, PublicKey} from "@solana/web3.js";
+import { Connection, PublicKey, TransactionInstruction } from "@solana/web3.js";
+import fs from 'fs';
+import { AnchorProvider, Program, web3, BN} from '@coral-xyz/anchor';
+import { SmartWalletIDL, SmartWalletJSON } from './smartWalletIdl';
+import NodeWallet from '@coral-xyz/anchor/dist/cjs/nodewallet';
+
+
+const GOKI_PROGRAM_ID = new web3.PublicKey(
+    "GokivDYuQXPZCWRkwMhdH2h91KpDQXBEmpgBgs55bnpH"
+);
+
+const SMART_WALLET = new web3.PublicKey(
+    "Eh7BJiZVxJ5bv9XA7NGS5UQTHmt1eZGb6aVFdSCT8XMg"
+);
+
+// @ts-ignore
+class u64 extends BN {
+    /**
+     * Convert to Buffer representation
+     */
+    toBuffer() {
+        const a = super.toArray().reverse();
+        const b = Buffer.from(a);
+
+        if (b.length === 8) {
+            return b;
+        }
+
+        const zeroPad = Buffer.alloc(8);
+        b.copy(zeroPad);
+        return zeroPad;
+    }
+}
 
 const connection = new Connection("http://api.mainnet-beta.solana.com");
 const programId = new PublicKey("GovER5Lthms3bLBqWub97yVrMmEogzX7xNjdXpPPCVZw");
@@ -56,4 +88,69 @@ const test5 = async () => {
     console.log(governanceAccountParsed.account.realm.toBase58());
 }
 
-test5();
+const depositBlaze = async () => {
+    let instructions : TransactionInstruction[] = [];
+   const whatKey = await withDepositGoverningTokens(
+       instructions,
+       new PublicKey("GovER5Lthms3bLBqWub97yVrMmEogzX7xNjdXpPPCVZw"),
+       3,
+       new PublicKey("7vrFDrK9GRNX7YZXbo7N3kvta7Pbn6W1hCXQ6C7WBxG9"),
+       new PublicKey("Hq57efaeQghGKdjWCkQpDD1MCARUWFZk9MtWoNLE2yVQ"),
+       new PublicKey("BLZEEuZUBVqFhj8adcCFPJvPVCiCyVmh3hkJMrU8KuJA"),
+       new PublicKey("AMd2nnFYtPGkeEbUvyVtWRDkG3nrESCvNW4C43mEvWrF"),
+       new PublicKey("AMd2nnFYtPGkeEbUvyVtWRDkG3nrESCvNW4C43mEvWrF"),
+       new PublicKey("J57bRWpXPD1LvtMYWtUSKijwu5WBSytsfGqqQFw5BVPH"),
+       new BN(999999999));
+    const keypair = web3.Keypair.fromSecretKey(new Uint8Array(JSON.parse(fs.readFileSync('/home/fzzyyti/.config/solana/blaze-delegate.json', 'utf-8'))));
+    const program = new Program<SmartWalletIDL>(
+        SmartWalletJSON,
+        GOKI_PROGRAM_ID,
+        // Add in a dummy provider, this program doesn't need any RPC calls
+        new AnchorProvider(
+            new web3.Connection("https://mainnet.helius-rpc.com/?api-key=2c959c1d-9b86-4881-8efc-7997e626ba09"),
+            new NodeWallet(keypair),
+            {}
+        )
+    );
+
+    const [ownerInvoker, ownerInvokerBump] = web3.PublicKey.findProgramAddressSync([
+        Buffer.from("GokiSmartWalletOwnerInvoker"),
+        SMART_WALLET.toBuffer(),
+        new u64(0).toBuffer(),
+    ], GOKI_PROGRAM_ID);
+    const ix = instructions[0];
+
+    const sig = await program.methods.ownerInvokeInstructionV2(
+        // @ts-ignore
+        new u64(0),
+        ownerInvokerBump,
+        ownerInvoker,
+        // @ts-ignore
+        ix.data
+    ).accounts({
+        smartWallet: SMART_WALLET,
+        owner: keypair.publicKey,
+    }).remainingAccounts(
+        [
+            {
+                pubkey: ix.programId,
+                isSigner: false,
+                isWritable: false,
+            },
+            ...ix.keys.map((k) => {
+                if (k.isSigner && ownerInvoker.equals(k.pubkey)) {
+                    return {
+                        ...k,
+                        isSigner: false,
+                    };
+                }
+                return k;
+            }),
+        ]
+    ).signers([keypair]).rpc();
+
+    console.log('sig is', sig);
+
+}
+
+depositBlaze();

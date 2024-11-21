@@ -4,12 +4,13 @@
   "main": "index.js",
   "license": "MIT",
   "dependencies": {
+    "@blockworks-foundation/voter-stake-registry-client": "^0.2.3",
+    "@coral-xyz/anchor": "0.29",
+    "@project-serum/anchor": "0.24.2",
     "@solana/spl-governance": "^0.3.28",
     "@solana/spl-memo": "^0.2.3",
     "@solana/spl-token": "^0.3.9",
     "@solana/web3.js": "^1.87.6",
-    "@types/bn.js": "^5.1.5",
-    "bn.js": "^5.2.1",
     "ts-node": "^10.9.1",
     "tsc": "^2.0.4",
     "typescript": "^5.3.2"
