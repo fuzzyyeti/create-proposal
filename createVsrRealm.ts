@@ -1,6 +1,6 @@
 import {
-    createInstructionData,
-    getProposalTransactionAddress,
+    createInstructionData, getProposal,
+    getProposalTransactionAddress, getTokenOwnerRecordAddress, getVoterWeightRecord, getVoterWeightRecordAddress,
     GovernanceConfig,
     GoverningTokenConfigAccountArgs,
     GoverningTokenType,
@@ -14,9 +14,9 @@ import {
     withCastVote,
     withCreateGovernance,
     withCreateProposal,
-    withCreateRealm,
+    withCreateRealm, withCreateTokenOwnerRecord,
     withDepositGoverningTokens,
-    withExecuteTransaction,
+    withExecuteTransaction, withFinalizeVote,
     withFlagTransactionError,
     withInsertTransaction,
     withSetRealmConfig,
@@ -26,7 +26,14 @@ import {
 import { VsrClient } from '@blockworks-foundation/voter-stake-registry-client'
 
 
-import { Connection, Keypair, PublicKey, TransactionInstruction } from "@solana/web3.js";
+import {
+    Connection,
+    Keypair,
+    PublicKey,
+    TransactionInstruction,
+    TransactionMessage,
+    VersionedTransaction
+} from "@solana/web3.js";
 import { withCreateMint } from "./tools/withCreateMint";
 import * as fs from "fs";
 import { sendTransaction } from "./tools/sdk";
@@ -39,6 +46,9 @@ import { AnchorProvider } from '@coral-xyz/anchor';
 import NodeWallet from '@coral-xyz/anchor/dist/cjs/nodewallet';
 import { getAssociatedTokenAddressSync, TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import { ASSOCIATED_PROGRAM_ID } from '@coral-xyz/anchor/dist/cjs/utils/token';
+import { withVoterWeightAccounts } from '@solana/spl-governance/lib/governance/withVoterWeightAccounts';
+import { withExecuteInstruction } from '@solana/spl-governance/lib/governance/withExecuteInstruction';
+import * as readline from 'node:readline';
 
 const connection = new Connection("http://127.0.0.1:8899");
 const governanceProgramId = new PublicKey("GovER5Lthms3bLBqWub97yVrMmEogzX7xNjdXpPPCVZw");
@@ -52,6 +62,11 @@ const test1 = async () => {
     const walletPkArray = Uint8Array.from(JSON.parse(secretKey));
     let wallet = Keypair.fromSecretKey(walletPkArray);
     signers.push(wallet);
+
+    const nodeWallet = new NodeWallet(wallet);
+    const provider = new AnchorProvider(connection, nodeWallet, AnchorProvider.defaultOptions());
+    const vsr = await VsrClient.connect(provider, false);
+    console.log("program id", vsr.program.programId);
 
     // Create and mint governance token
     let mintPk = await withCreateMint(
@@ -70,7 +85,7 @@ const test1 = async () => {
         wallet.publicKey,
         wallet.publicKey,
     );
-    await withMintTo(instructions, mintPk, ataPk, wallet.publicKey,10);
+    await withMintTo(instructions, mintPk, ataPk, wallet.publicKey,10_000_000_000);
 
     // Create Realm
     const name = `Realm-${new Keypair().publicKey.toBase58().slice(0, 6)}`;
@@ -87,27 +102,38 @@ const test1 = async () => {
         undefined,
         MintMaxVoteWeightSource.FULL_SUPPLY_FRACTION,
         new BN(1),
-        new GoverningTokenConfigAccountArgs({voterWeightAddin: undefined, maxVoterWeightAddin: undefined, tokenType: GoverningTokenType.Liquid})
+        new GoverningTokenConfigAccountArgs({voterWeightAddin: vsr.program.programId, maxVoterWeightAddin: undefined, tokenType: GoverningTokenType.Liquid})
     );
 
-    //let dummyIxs: TransactionInstruction[] = []
+   // let dummyIxs: TransactionInstruction[] = []
     // Deposit governance tokens
-    const tokenOwnerRecordPk = await withDepositGoverningTokens(
+    // const tokenOwnerRecordPk = await withDepositGoverningTokens(
+    //     dummyIxs,
+    //     governanceProgramId,
+    //     programVersion,
+    //     realmPk,
+    //     ataPk,
+    //     mintPk,
+    //     wallet.publicKey,
+    //     wallet.publicKey,
+    //     wallet.publicKey,
+    //     new BN(1),
+    // );
+
+    const tokenOwnerRecordPk = await getTokenOwnerRecordAddress(governanceProgramId, realmPk, mintPk, wallet.publicKey);
+    await withCreateTokenOwnerRecord(
         instructions,
         governanceProgramId,
-        programVersion,
+        3,
         realmPk,
-        ataPk,
+        wallet.publicKey,
         mintPk,
-        wallet.publicKey,
-        wallet.publicKey,
-        wallet.publicKey,
-        new BN(1),
-    );
+        wallet.publicKey
+        );
 
     let communityVoteThreshold = new VoteThreshold({
         type: VoteThresholdType.YesVotePercentage,
-        value: 60,
+        value: 10,
     });
 
     let councilVoteThreshold = new VoteThreshold({
@@ -126,7 +152,7 @@ const test1 = async () => {
         communityVoteThreshold: communityVoteThreshold,
         minCommunityTokensToCreateProposal: new BN(1),
         minInstructionHoldUpTime: 0,
-        baseVotingTime: getTimestampFromDays(3),
+        baseVotingTime: 3600,//getTimestampFromDays(1),
         communityVoteTipping: VoteTipping.Strict,
         councilVoteTipping: VoteTipping.Strict,
         minCouncilTokensToCreateProposal: new BN(1),
@@ -137,49 +163,11 @@ const test1 = async () => {
         depositExemptProposalCount: 0,
     });
 
-    const governedAcct = Keypair.generate();
 
-    const governancePk = await withCreateGovernance(
-        instructions,
-        governanceProgramId,
-        programVersion,
-        realmPk,
-        governedAcct.publicKey,
-        config,
-        tokenOwnerRecordPk,
-        wallet.publicKey,
-        wallet.publicKey
-    );
-
-    const voteType = VoteType.SINGLE_CHOICE;
-    const options = ['Approve'];
-    const useDenyOption = true;
-
-    const proposalPk = await withCreateProposal(
-        instructions,
-        governanceProgramId,
-        programVersion,
-        realmPk,
-        governancePk,
-        tokenOwnerRecordPk,
-        'proposal 1',
-        '',
-        mintPk,
-        wallet.publicKey,
-        0,
-        voteType,
-        options,
-        useDenyOption,
-        wallet.publicKey,
-    );
-    const [nativeTreasury, _] = PublicKey.findProgramAddressSync([Buffer.from("native-treasury"), governancePk.toBuffer()], governanceProgramId);
     console.log("realm is", realmPk.toBase58());
-    console.log('governance is', governancePk.toBase58());
-    console.log("proposal is", proposalPk.toBase58());
     console.log("mint is", mintPk.toBase58());
     console.log("ata is", ataPk.toBase58());
     console.log("signers are",signers);
-    console.log("native treasury is", nativeTreasury.toBase58());
     console.log("tokenOwnerRecordPk is", tokenOwnerRecordPk.toBase58());
     //holding
     const tokenHolding = PublicKey.findProgramAddressSync([Buffer.from("governance"), realmPk.toBuffer(), mintPk.toBuffer()], governanceProgramId)[0];
@@ -189,10 +177,6 @@ const test1 = async () => {
     signers = [];
 
 
-    const nodeWallet = new NodeWallet(wallet);
-    const provider = new AnchorProvider(connection, nodeWallet, AnchorProvider.defaultOptions());
-    const vsr = await VsrClient.connect(provider, false);
-    console.log("program id", vsr.program.programId);
 
 
     const [registrar, registrarBump] = PublicKey.findProgramAddressSync([realmPk.toBuffer(), Buffer.from("registrar"), mintPk.toBuffer()], vsr.program.programId);
@@ -227,7 +211,7 @@ const test1 = async () => {
     ]).rpc();
     console.log("added voting mint", addVotingMintSig);
 
-    // let realmConfigIxs: TransactionInstruction[] = [];
+    let realmConfigIxs: TransactionInstruction[] = [];
     // await withSetRealmConfig(
     //     realmConfigIxs,
     //     governanceProgramId,
@@ -265,9 +249,9 @@ const test1 = async () => {
 
     const createDepositEntrySig = await vsr.program.methods.createDepositEntry(
         0,
-        {none: {}},
+        {constant: {}},
         null,
-        0,
+        100,
         false
     ).accounts({
         registrar,
@@ -284,7 +268,7 @@ const test1 = async () => {
 
     const depositSig = await vsr.program.methods.deposit(
         0,
-        new BN(1)).accounts({
+        new BN(10_000_000_000)).accounts({
         registrar,
         voter,
         vault: vaultAta,
@@ -294,6 +278,70 @@ const test1 = async () => {
     }).rpc()
     console.log("deposit sig", depositSig);
 
+    //Create proposal
+    const voteType = VoteType.SINGLE_CHOICE;
+    const options = ['Approve'];
+    const useDenyOption = true;
+
+
+    instructions = [];
+
+    const governedAcct = Keypair.generate();
+
+    console.log("registrar is", registrar.toBase58());
+    await (new Promise(f => setTimeout(f, 20000)));
+    const updateVoterWeightRecord = await vsr.program.methods.updateVoterWeightRecord().accounts({
+        registrar,
+        voter,
+        voterWeightRecord,
+    }).instruction();
+    instructions.push(updateVoterWeightRecord);
+
+    const governancePk = await withCreateGovernance(
+        instructions,
+        governanceProgramId,
+        programVersion,
+        realmPk,
+        governedAcct.publicKey,
+        config,
+        tokenOwnerRecordPk,
+        wallet.publicKey,
+        wallet.publicKey,
+        voterWeightRecord
+    );
+
+
+    await sendTransaction(connection, instructions, signers, wallet);
+    console.log("created governance");
+
+    instructions = [];
+
+    instructions.push(updateVoterWeightRecord);
+    const proposalPk = await withCreateProposal(
+        instructions,
+        governanceProgramId,
+        programVersion,
+        realmPk,
+        governancePk,
+        tokenOwnerRecordPk,
+        'proposal 1',
+        '',
+        mintPk,
+        wallet.publicKey,
+        0,
+        voteType,
+        options,
+        useDenyOption,
+        wallet.publicKey,
+        voterWeightRecord
+    );
+
+    await sendTransaction(connection, instructions, signers, wallet);
+    console.log("created proposal");
+
+    instructions = [];
+
+    const [nativeTreasury, _] = PublicKey.findProgramAddressSync([Buffer.from("native-treasury"), governancePk.toBuffer()], governanceProgramId);
     // Vote after setup
     const memoInstruction = createMemoInstruction("What's up?",
         [nativeTreasury]
@@ -334,11 +382,7 @@ const test1 = async () => {
 
     const vote = Vote.fromYesNoVote(YesNoVote.Yes);
 
-    const updateVoterWeightRecord = await vsr.program.methods.updateVoterWeightRecord().accounts({
-        registrar,
-        voter,
-        voterWeightRecord,
-    }).instruction();
+
     instructions.push(updateVoterWeightRecord);
 
     const votePk = await withCastVote(
@@ -354,9 +398,29 @@ const test1 = async () => {
         mintPk,
         vote,
         wallet.publicKey,
+        voterWeightRecord
     );
-
     await sendTransaction(connection, instructions, signers, wallet);
+    await new Promise(f => setTimeout(f, 10000));
+
+    console.log("proposal a pk", await getProposal(connection, proposalPk));
+    await pauseExecution();
+    console.log("proposal c pk", await getProposal(connection, proposalPk));
+    await new Promise(f => setTimeout(f, 20000));
+    instructions = [];
+    await withFinalizeVote(
+        instructions,
+        governanceProgramId,
+        programVersion,
+        realmPk,
+        governancePk,
+        proposalPk,
+        tokenOwnerRecordPk,
+        mintPk);
+
+    console.log("proposal pk b", await getProposal(connection, proposalPk));
+    await sendTransaction(connection, instructions, signers, wallet);
+    await new Promise(f => setTimeout(f, 20000));
 
     console.log("got there")
     instructions = [];
@@ -371,15 +435,19 @@ const test1 = async () => {
     console.log("native treasury is", nativeTreasury.toBase58());
     console.log("proposalTransactionAddress is", proposalTransactionAddress.toBase58());
 
-    withFlagTransactionError(
-        instructions,
-        governanceProgramId,
-        programVersion,
-        proposalPk,
-        tokenOwnerRecordPk,
-        wallet.publicKey,
-        proposalTransactionAddress,
-    );
+    // withFlagTransactionError(
+    //     instructions,
+    //     governanceProgramId,
+    //     programVersion,
+    //     proposalPk,
+    //     tokenOwnerRecordPk,
+    //     wallet.publicKey,
+    //     proposalTransactionAddress,
+    // );
+
+    const p = await getProposal(connection, proposalPk);
+    console.log("proposal pk", proposalPk);
+    console.log("proposal", JSON.stringify(p));
     await withExecuteTransaction(
         instructions,
         governanceProgramId,
@@ -388,11 +456,48 @@ const test1 = async () => {
         proposalPk,
         proposalTransactionAddress,
         [instructionData]
-    )
-    await new Promise(f => setTimeout(f, 10000));
-    await sendTransaction(connection, instructions, signers, wallet);
+    );
+
+
+    // await new Promise(f => setTimeout(f, 10000));
+    // const propInfo = await getProposal(connection, proposalPk);
+    // console.log("prop info", JSON.stringify(propInfo));
+    // console.log("prop info", propInfo);
+//    await sendTransaction(connection, instructions, signers, wallet);
+    console.log("here");
+    const executeMessageBlockhash = await connection.getLatestBlockhash();
+    console.log("there");
+    const executeMessage = new TransactionMessage({
+        recentBlockhash: executeMessageBlockhash.blockhash,
+        instructions,
+        payerKey: wallet.publicKey
+    }).compileToV0Message();
+    const executeTx = new VersionedTransaction(executeMessage);
+    executeTx.sign([wallet]);
+    const sig = await connection.sendTransaction(executeTx);
+    console.log("sent", sig);
+    await connection.confirmTransaction({
+        signature: sig,
+        ...executeMessageBlockhash
+    });
+    console.log("executed", sig);
+    // const sim = await connection.simulateTransaction(executeTx);
+    // console.log("sim", JSON.stringify(sim));
+
 
 
 }
+function pauseExecution(message: string = "Press any key to continue..."): Promise<void> {
+    const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout
+    });
 
+    return new Promise<void>((resolve) => {
+        rl.question(message, () => {
+            rl.close();
+            resolve();
+        });
+    });
+}
 test1();
