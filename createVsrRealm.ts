@@ -1,11 +1,10 @@
 import {
     createInstructionData, getProposal,
-    getProposalTransactionAddress, getTokenOwnerRecordAddress, getVoterWeightRecord, getVoterWeightRecordAddress,
+    getProposalTransactionAddress, getTokenOwnerRecordAddress,
     GovernanceConfig,
     GoverningTokenConfigAccountArgs,
     GoverningTokenType,
     MintMaxVoteWeightSource,
-    MintMaxVoteWeightSourceType,
     Vote,
     VoteThreshold,
     VoteThresholdType,
@@ -15,11 +14,8 @@ import {
     withCreateGovernance,
     withCreateProposal,
     withCreateRealm, withCreateTokenOwnerRecord,
-    withDepositGoverningTokens,
     withExecuteTransaction, withFinalizeVote,
-    withFlagTransactionError,
-    withInsertTransaction,
-    withSetRealmConfig,
+    withInsertTransaction, withSetGovernanceDelegate,
     withSignOffProposal,
     YesNoVote
 } from "@solana/spl-governance";
@@ -39,28 +35,59 @@ import * as fs from "fs";
 import { sendTransaction } from "./tools/sdk";
 import { withCreateAssociatedTokenAccount } from "./tools/withCreateAssociatedTokenAccount";
 import { withMintTo } from "./tools/withMintTo";
-import { getTimestampFromDays } from "./tools/units";
 import { createMemoInstruction } from "@solana/spl-memo";
 import BN from "bn.js";
-import { AnchorProvider } from '@coral-xyz/anchor';
+import { AnchorProvider, Program } from '@coral-xyz/anchor';
 import NodeWallet from '@coral-xyz/anchor/dist/cjs/nodewallet';
 import { getAssociatedTokenAddressSync, TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import { ASSOCIATED_PROGRAM_ID } from '@coral-xyz/anchor/dist/cjs/utils/token';
-import { withVoterWeightAccounts } from '@solana/spl-governance/lib/governance/withVoterWeightAccounts';
-import { withExecuteInstruction } from '@solana/spl-governance/lib/governance/withExecuteInstruction';
 import * as readline from 'node:readline';
+import { SmartWalletIDL, SmartWalletJSON } from './smartWalletIdl';
 
 const connection = new Connection("http://127.0.0.1:8899");
 const governanceProgramId = new PublicKey("GovER5Lthms3bLBqWub97yVrMmEogzX7xNjdXpPPCVZw");
-const grapeRealm = new PublicKey('By2sVGZXwfQq6rAiAM3rNPJ9iQfb5e2QhnF4YjJ4Bip');
+
+const GOKI_PROGRAM_ID = new PublicKey(
+    "GokivDYuQXPZCWRkwMhdH2h91KpDQXBEmpgBgs55bnpH"
+);
+
+class u64 extends BN {
+    /**
+     * Convert to Buffer representation
+     */
+    toBuffer() {
+        const a = super.toArray().reverse();
+        const b = Buffer.from(a);
+
+        if (b.length === 8) {
+            return b;
+        }
+
+        const zeroPad = Buffer.alloc(8);
+        b.copy(zeroPad);
+        return zeroPad;
+    }
+}
+
+const secretKey = fs.readFileSync('/home/fzzyyti/.config/solana/id.json', 'utf-8')
+const walletPkArray = Uint8Array.from(JSON.parse(secretKey));
+let wallet = Keypair.fromSecretKey(walletPkArray);
+
+const program = new Program<SmartWalletIDL>(
+    SmartWalletJSON,
+    GOKI_PROGRAM_ID,
+    // Add in a dummy provider, this program doesn't need any RPC calls
+    new AnchorProvider(
+        connection,
+        new NodeWallet(wallet),
+        {}
+    )
+);
 
 const test1 = async () => {
     const programVersion = 3;
     let instructions: TransactionInstruction[] = [];
     let signers: Keypair[] = [];
-    const secretKey = fs.readFileSync('/home/fzzyyti/.config/solana/id.json', 'utf-8')
-    const walletPkArray = Uint8Array.from(JSON.parse(secretKey));
-    let wallet = Keypair.fromSecretKey(walletPkArray);
     signers.push(wallet);
 
     const nodeWallet = new NodeWallet(wallet);
@@ -104,21 +131,6 @@ const test1 = async () => {
         new BN(1),
         new GoverningTokenConfigAccountArgs({voterWeightAddin: vsr.program.programId, maxVoterWeightAddin: undefined, tokenType: GoverningTokenType.Liquid})
     );
-
-   // let dummyIxs: TransactionInstruction[] = []
-    // Deposit governance tokens
-    // const tokenOwnerRecordPk = await withDepositGoverningTokens(
-    //     dummyIxs,
-    //     governanceProgramId,
-    //     programVersion,
-    //     realmPk,
-    //     ataPk,
-    //     mintPk,
-    //     wallet.publicKey,
-    //     wallet.publicKey,
-    //     wallet.publicKey,
-    //     new BN(1),
-    // );
 
     const tokenOwnerRecordPk = await getTokenOwnerRecordAddress(governanceProgramId, realmPk, mintPk, wallet.publicKey);
     await withCreateTokenOwnerRecord(
@@ -210,24 +222,6 @@ const test1 = async () => {
         }
     ]).rpc();
     console.log("added voting mint", addVotingMintSig);
-
-    let realmConfigIxs: TransactionInstruction[] = [];
-    // await withSetRealmConfig(
-    //     realmConfigIxs,
-    //     governanceProgramId,
-    //     3,
-    //     realmPk,
-    //     realmAuthorityPk.publicKey,
-    //     undefined,
-    //     new MintMaxVoteWeightSource({type: MintMaxVoteWeightSourceType.Absolute, value: new BN(1000000000)}),
-    //     new BN(1),
-    //     new GoverningTokenConfigAccountArgs({voterWeightAddin: vsr.program.programId, maxVoterWeightAddin: undefined, tokenType: GoverningTokenType.Liquid }),
-    //     undefined,
-    //     undefined
-    // );
-    // await sendTransaction(connection, realmConfigIxs, [realmAuthorityPk], realmAuthorityPk);
-    // console.log("setup realm config");
-    // // Create voter
 
     const [voter, voterBump] = PublicKey.findProgramAddressSync([registrar.toBuffer(), Buffer.from("voter"), wallet.publicKey.toBuffer()], vsr.program.programId);
     const [voterWeightRecord, voterWeightRecordBump] = PublicKey.findProgramAddressSync([registrar.toBuffer(), Buffer.from("voter-weight-record"), wallet.publicKey.toBuffer()], vsr.program.programId);
@@ -374,19 +368,38 @@ const test1 = async () => {
     );
 
     await sendTransaction(connection, instructions, signers, wallet);
-    console.log("got here");
+    console.log("proposal creation done");
+    // Delegate
+    const gokiWallet = await createGokiWallet(program);
+    const ownerInvoker = findOwnerInvokerAddress(gokiWallet)[0];
+
+    instructions = [];
+    await withSetGovernanceDelegate(
+        instructions,
+        governanceProgramId,
+        programVersion,
+        realmPk,
+        mintPk,
+        wallet.publicKey,
+        wallet.publicKey,
+        ownerInvoker
+    );
+    await sendTransaction(connection, instructions, signers, wallet);
+
+    console.log("gov delegate set to goki wallet");
+
+
 
     // Cast Vote
     instructions = [];
     signers = [];
 
     const vote = Vote.fromYesNoVote(YesNoVote.Yes);
-
-
     instructions.push(updateVoterWeightRecord);
 
+    let unwrappedIx: TransactionInstruction[] = [];
     const votePk = await withCastVote(
-        instructions,
+        unwrappedIx,
         governanceProgramId,
         programVersion,
         realmPk,
@@ -400,7 +413,11 @@ const test1 = async () => {
         wallet.publicKey,
         voterWeightRecord
     );
+
+    instructions.push(await createGokiIx(unwrappedIx[0], gokiWallet, program));
+
     await sendTransaction(connection, instructions, signers, wallet);
+    console.log("tried to vote with delegate");
     await new Promise(f => setTimeout(f, 10000));
 
     console.log("proposal a pk", await getProposal(connection, proposalPk));
@@ -435,16 +452,6 @@ const test1 = async () => {
     console.log("native treasury is", nativeTreasury.toBase58());
     console.log("proposalTransactionAddress is", proposalTransactionAddress.toBase58());
 
-    // withFlagTransactionError(
-    //     instructions,
-    //     governanceProgramId,
-    //     programVersion,
-    //     proposalPk,
-    //     tokenOwnerRecordPk,
-    //     wallet.publicKey,
-    //     proposalTransactionAddress,
-    // );
-
     const p = await getProposal(connection, proposalPk);
     console.log("proposal pk", proposalPk);
     console.log("proposal", JSON.stringify(p));
@@ -469,7 +476,7 @@ const test1 = async () => {
     console.log("there");
     const executeMessage = new TransactionMessage({
         recentBlockhash: executeMessageBlockhash.blockhash,
-        instructions,
+        instructions: [await createGokiIx(instructions[0], gokiWallet, program)],
         payerKey: wallet.publicKey
     }).compileToV0Message();
     const executeTx = new VersionedTransaction(executeMessage);
@@ -484,10 +491,66 @@ const test1 = async () => {
     // const sim = await connection.simulateTransaction(executeTx);
     // console.log("sim", JSON.stringify(sim));
 
-
-
 }
-function pauseExecution(message: string = "Press any key to continue..."): Promise<void> {
+
+async function createGokiWallet(program: Program<SmartWalletIDL>) {
+    const base = Keypair.generate();
+    const [smartWallet, smartWalletBump]  = PublicKey.findProgramAddressSync([Buffer.from("GokiSmartWallet"), base.publicKey.toBuffer()], GOKI_PROGRAM_ID);
+    const createWalletSig = await program.methods.createSmartWallet(
+        smartWalletBump,
+        1,
+        [wallet.publicKey],
+        new BN(1),
+        new BN(0)
+    ).accounts({
+        base: base.publicKey,
+        smartWallet,
+        payer: wallet.publicKey
+    }).signers([wallet, base]).rpc();
+    console.log("created wallet", createWalletSig);
+    return smartWallet;
+}
+
+const findOwnerInvokerAddress = (smartWallet: PublicKey, index = 0) => {
+    return PublicKey.findProgramAddressSync(
+        [
+            Buffer.from("GokiSmartWalletOwnerInvoker"),
+            smartWallet.toBuffer(),
+            new u64(index).toBuffer(),
+        ],
+        GOKI_PROGRAM_ID
+    );
+};
+
+async function createGokiIx(instruction: TransactionInstruction, smartWallet: PublicKey, program: Program<SmartWalletIDL>) {
+    const [invokerAddress,invokerBump] = findOwnerInvokerAddress(smartWallet);
+    return program.methods.ownerInvokeInstructionV2(
+        new BN(0),
+        invokerBump,
+        invokerAddress,
+        instruction.data).accounts(
+            {
+                smartWallet,
+                owner: wallet.publicKey,
+            }).remainingAccounts([
+                {
+                    pubkey: instruction.programId,
+                    isSigner: false,
+                    isWritable: false,
+                },
+                ...instruction.keys.map((k) => {
+                    if (k.isSigner && invokerAddress.equals(k.pubkey)) {
+                        return {
+                            ...k,
+                            isSigner: false,
+                        };
+                    }
+                    return k;
+                }),
+            ]).instruction();
+}
+
+function pauseExecution(message: string = "run `solana-test-validator --warp-slot 20000` advancing 20k past the current slot"): Promise<void> {
     const rl = readline.createInterface({
         input: process.stdin,
         output: process.stdout
@@ -500,4 +563,7 @@ function pauseExecution(message: string = "Press any key to continue..."): Promi
         });
     });
 }
+
 test1();
+
+
